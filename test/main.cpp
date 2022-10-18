@@ -60,7 +60,8 @@ std::tuple<Originalmat,Originalmat,int> ReadData(std::string filename){
   Originalmat Sparsemat,Densemat(W,N);
   Sparsemat.setmat(H,W,data);
   //std::cout<<nnz<<std::endl;
-  //delete []data;
+  delete []data;
+  data=nullptr;
   return std::make_tuple(Sparsemat,Densemat,nnz);
 }
 
@@ -132,8 +133,10 @@ int* WeightReorder(Originalmat& Sparsemat)
     RowUse.erase(row);
   }
   Sparsemat.setmat(rows,cols,B);
+  //std::cout<<B<<" "<<Sparsemat.get_mat()<<std::endl;
   //delete [] A;
-  //delete [] B;
+  //delete []B;
+  //B=nullptr;
   return MappedRow;
 }
 
@@ -152,7 +155,7 @@ void init_Densematrix(Originalmat& Densemat)
     M[i]=dist(engin);
   }
   Densemat.setmat(row,col,M);
- // delete [] M;
+  //delete []M;
 }
 
 std::pair<Originalmat,Originalmat> DenseClusterPartition(Originalmat& Densemat,float radio)
@@ -175,8 +178,8 @@ std::pair<Originalmat,Originalmat> DenseClusterPartition(Originalmat& Densemat,f
   Originalmat BigDensemat,LittleDensemat;
   BigDensemat.setmat(row,colSplit,BigM);
   LittleDensemat.setmat(row,col-colSplit,LittleM);
-  //delete []BigM;
-  //delete []LittleM;
+  delete []BigM;
+  delete []LittleM;
   return std::make_pair(BigDensemat,LittleDensemat);
 }
 
@@ -226,6 +229,7 @@ int* TaskPartition_Thread(SparseMatrixType SparseMatrix,int numthread)
   int *thread;
   size_t nSize=static_cast<size_t>(numthread+1);
   thread=new int[nSize];
+  memset(thread,0,sizeof(thread));
   thread[0]=0;
   for(int i=1;i<numthread;i++){
     while(now<=row){
@@ -235,6 +239,9 @@ int* TaskPartition_Thread(SparseMatrixType SparseMatrix,int numthread)
       }
       thread[i]=now;
       now=now+1;
+    }
+    if(thread[i]==0){
+      thread[i]=now;
     }
   }
   thread[numthread]=row;
@@ -260,24 +267,47 @@ void* myfunc(void* args)
 {
   MY_ARGS* p=(MY_ARGS*)args;
   int col=(p->DenseMatrix).innerSize();
-  //std::cout<<p->numcol<<std::endl;
   for(int H_o=(p->startrow);H_o<(p->endrow);H_o++){
     for(int W_o=(p->OuterIndex[H_o]);W_o<(p->OuterIndex[H_o+1]);W_o+=p->T_W){
       for(int K_o=0;K_o<col;K_o+=p->T_K){
-        for(int W_i=W_o;W_i<W_o+p->T_W&&W_i<(p->OuterIndex[H_o+1]);W_i++){
-          for(int K_i=K_o;K_i<K_o+p->T_K&&K_i<col;K_i++){
+        for(int W_i=W_o;(W_i<W_o+p->T_W)&&(W_i<(p->OuterIndex[H_o+1]));W_i++){
+          for(int K_i=K_o;(K_i<K_o+p->T_K)&&(K_i<col);K_i++){
             result[H_o*(p->numcol)+p->startcol+K_i]+=p->Value[W_i]*(p->DenseMatrix(p->InnerIndex[W_i],K_i));
           }
         }
       }
     }
   }
-  //std::cout<<1<<std::endl;
   return nullptr;
 }
 
-int main(){
-  std::string filename="/home/ljx/Efficient-Sparse-Matrix-Matrix-Multiplication-on-asymmetric-CPUs/data/0.8/0.smt";
+bool Judgeresult(int row,int col,MatrixXf& BigDenseMatrix,MatrixXf& LittleDenseMatrix,SparseMatrixType& SparseMatrix)
+{
+  bool flag=true;
+  MatrixXf result_matrix1(row,BigDenseMatrix.innerSize());
+  result_matrix1.noalias()=SparseMatrix*BigDenseMatrix;
+  MatrixXf result_matrix2(row,LittleDenseMatrix.innerSize());
+  result_matrix2.noalias()=SparseMatrix*LittleDenseMatrix;
+  int Bigcol=BigDenseMatrix.innerSize(),Littlecol=LittleDenseMatrix.innerSize();
+  for(int i=0;i<row;i++){
+    for(int j=0;j<Bigcol;j++){
+      if(std::fabs(result[i*col+j]-result_matrix1(i,j))>eps){
+        //std::cout<<result[i*col+j]<<" "<<result_matrix1(i,j)<<std::endl;
+        flag=false;
+      }
+    }
+    for(int j=Bigcol;j<col;j++){
+      if(std::fabs(result[i*col+j]-result_matrix2(i,j-Bigcol))>eps){
+        //std::cout<<i<<" "<<j<<std::endl;
+        flag=false;
+      }
+    }
+  }
+  return flag;
+}
+
+int main(int argc,char **argv){
+  std::string filename="/home/ljx/Efficient-Sparse-Matrix-Matrix-Multiplication-on-asymmetric-CPUs/data/0.8/1.smt";
   Originalmat Sparsemat,Densemat;
   int nnz;
   std::tie(Sparsemat,Densemat,nnz)=ReadData(filename);
@@ -318,49 +348,27 @@ int main(){
     args[i].numcol=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
     args[i+numthread].startcol=BigDenseMatrix.innerSize();
     args[i+numthread].numcol=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
-
+    std::cout<<args[i].startrow<<" "<<args[i+numthread].startrow<<std::endl;
+    std::cout<<args[i].endrow<<" "<<args[i+numthread].endrow<<std::endl;
   }
   for(int i=0;i<numthread*2;i++){
     if(pthread_create(&thread_handles[i],NULL,myfunc,(void *)(&args[i]))){
       std::cout<<"error"<<std::endl;
     }
   }
+  std::cout<<BigDenseMatrix.innerSize()<<std::endl;
   for(int i=0;i<numthread*2;i++){
     if(pthread_join(thread_handles[i],NULL)){
       std::cout<<i<<std::endl;
     }
   }
-  /*MatrixXf ResultMatrix(SparseMatrix.outerSize(),(BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize()));
-  row=ResultMatrix.outerSize();
-  col=ResultMatrix.innerSize();
-  for(int i=0;i<numthread;i++){
-    int Bigcol=(args[i].DenseMatrix).innerSize();
-    int Littlecol=(args[i+numthread].DenseMatrix).innerSize();
-    for(int j=args[i].startrow;j<args[i].endrow;j++){
-      for(int k=0;k<Bigcol;k++){
-        ResultMatrix(j,k)=args[i].result[j*(Bigcol+Littlecol)+k];
-      }
-      for(int k=Bigcol;k<Bigcol+Littlecol;k++){
-        ResultMatrix(j,k)=args[i+numthread].result[j*(Bigcol+Littlecol)+k];
-      }
-    }
-    delete [](args[i].result);
-    delete [](args[i+numthread].result);
-  }
-  std::cout<<ResultMatrix<<std::endl;*/
   row=SparseMatrix.outerSize();
   col=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
-  //std::cout<<row<<" "<<col<<std::endl;
-  for(int i=0;i<row;i++){
-    for(int j=0;j<col;j++){
-      std::cout<<result[i*col+j]<<" ";
-    }
-    std::cout<<std::endl;
+  int flag=Judgeresult(row,col,BigDenseMatrix,LittleDenseMatrix,SparseMatrix);
+  if(flag){
+    std::cout<<"result correct"<<std::endl;
   }
-  MatrixXf result_matrix1(row,BigDenseMatrix.innerSize());
-  result_matrix1.noalias()=SparseMatrix*BigDenseMatrix;
-  MatrixXf result_matrix2(row,LittleDenseMatrix.innerSize());
-  result_matrix2.noalias()=SparseMatrix*LittleDenseMatrix;
-  std::cout<<result_matrix1<<std::endl;
-  std::cout<<result_matrix2<<std::endl;
+  else{
+    std::cout<<"result error"<<std::endl;
+  }
 }
