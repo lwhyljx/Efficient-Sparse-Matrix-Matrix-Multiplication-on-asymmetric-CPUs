@@ -1,0 +1,30 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+../src/include/Originalmat.h
+iostream
+-
+
+../src/include/safememory.hpp
+memory
+-
+cstring
+-
+
+/home/ljx/Efficient-Sparse-Matrix-Matrix-Multiplication-on-asymmetric-CPUs/src/src/Originalmat.cpp
+Originalmat.h
+/home/ljx/Efficient-Sparse-Matrix-Matrix-Multiplication-on-asymmetric-CPUs/src/src/Originalmat.h
+safememory.hpp
+/home/ljx/Efficient-Sparse-Matrix-Matrix-Multiplication-on-asymmetric-CPUs/src/src/safememory.hpp
+iostream
+-
+memory
+-
+cstring
+-
+

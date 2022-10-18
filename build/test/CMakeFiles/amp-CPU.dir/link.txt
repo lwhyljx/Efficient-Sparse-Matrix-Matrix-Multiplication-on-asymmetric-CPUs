@@ -1,0 +1,1 @@
+/usr/bin/c++    -rdynamic CMakeFiles/amp-CPU.dir/main.cpp.o  -o ../bin/amp-CPU   -L/home/ljx/Efficient-Sparse-Matrix-Matrix-Multiplication-on-asymmetric-CPUs/build/lib  -Wl,-rpath,/home/ljx/Efficient-Sparse-Matrix-Matrix-Multiplication-on-asymmetric-CPUs/build/lib: -Wl,-Bstatic -lOriginalmat -Wl,-Bdynamic -lpthread 
