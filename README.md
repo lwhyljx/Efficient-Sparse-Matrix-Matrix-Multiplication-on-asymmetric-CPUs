@@ -26,7 +26,7 @@ for(int W_i=W_o;(W_i<W_o+p->T_W)&&(W_i<(p->OuterIndex[H_o+1]));W_i++){
 } 
 ```  
 ## Cost Model
-
+First,Considering memory accesses and degree of parallelism on latency  
 ## Run
 ```  
 cd /{YouPath}/Efficient-Sparse-Matrix-Matrix-Multiplication-on-asymmetric-CPUs  
