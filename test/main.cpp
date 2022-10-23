@@ -3,6 +3,9 @@
 #include <Eigen/Dense>
 
 
+#define __USE_GNU 
+//#define _GNU_SOURCE
+
 #include<iostream>
 #include<fstream>
 #include<vector>
@@ -13,7 +16,12 @@
 #include<cstring>
 #include<random>
 #include<time.h>
+#include<unistd.h>
+#include<sched.h>
+#include<ctype.h>
+#include<string.h>
 #include<pthread.h>
+#include<sys/syscall.h>
 
 #define eps 1e-4
 typedef Eigen::Matrix<float,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor>MatrixXf;
@@ -266,11 +274,22 @@ typedef struct{
   int *OuterIndex;
   float *result;
   float *DenseMatrix;
+  int tid;
 }MY_ARGS;
 
 void* myfunc(void* args)
 {
   MY_ARGS* p=(MY_ARGS*)args;
+  cpu_set_t mask;
+  pid_t pid=gettid();
+  CPU_ZERO(&mask);
+  CPU_SET(p->tid,&mask);
+  int syscallret=syscall(__NR_sched_setaffinity,pid,sizeof(mask),&mask);
+  if(syscallret){
+    fprintf(stderr,"syscall error %d\n",syscallret);
+    
+  }
+  printf("ID:%lu, CPU %d\n",pthread_self(),sched_getcpu());
   for(int H_o=(p->startrow);H_o<(p->endrow);H_o++){
     for(int W_o=(p->OuterIndex[H_o]);W_o<(p->OuterIndex[H_o+1]);W_o+=p->T_W){
       for(int K_o=0;K_o<(p->col);K_o+=p->T_K){
@@ -283,6 +302,8 @@ void* myfunc(void* args)
       }
     }
   }
+  printf("ID:%lu, CPU %d\n",pthread_self(),sched_getcpu());
+
   return nullptr;
 }
 
@@ -350,22 +371,23 @@ int main(int argc,char **argv){
     args[i+numthread].col=LittleDensemat.get_col();
     args[i].T_W=2;
     args[i].T_K=4;
-    args[i+numthread].T_W=2;
-    args[i+numthread].T_K=4;  
+    args[i+numthread].T_W=1;
+    args[i+numthread].T_K=2;  
     args[i].startcol=0;
     args[i].numcol=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
     args[i+numthread].startcol=BigDenseMatrix.innerSize();
     args[i+numthread].numcol=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
     args[i].result=args[i+numthread].result=result;
+    args[i].tid=i;
+    args[i+numthread].tid=i+numthread;
     //std::cout<<args[i].startrow<<" "<<args[i+numthread].startrow<<std::endl;
     //std::cout<<args[i].endrow<<" "<<args[i+numthread].endrow<<std::endl;
   }
+  int numberOFProcessors=sysconf(_SC_NPROCESSORS_CONF);
+  printf("Number of processors: %d\n",numberOFProcessors);
   for(int i=0;i<numthread*2;i++){
-    if(pthread_create(&thread_handles[i],NULL,myfunc,(void *)(&args[i]))){
-      std::cout<<"error"<<std::endl;
-    }
+    pthread_create(&thread_handles[i],NULL,myfunc,(void *)(&args[i]));
   }
-  std::cout<<BigDenseMatrix.innerSize()<<std::endl;
   for(int i=0;i<numthread*2;i++){
       pthread_join(thread_handles[i],NULL);
   }
