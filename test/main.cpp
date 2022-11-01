@@ -3,7 +3,7 @@
 #include <Eigen/Sparse>
 #include <Eigen/Dense>
 
-
+#define EIGEN_DONT_PARALLELIZE
 //#define _GNU_SOURCE
 
 #include<iostream>
@@ -19,7 +19,7 @@
 #include<unistd.h>
 #include<sched.h>
 #include<ctype.h>
-#include<string.h>
+#include<cstring>
 #include<pthread.h>
 #include<sys/syscall.h>
 
@@ -172,24 +172,9 @@ std::pair<Originalmat,Originalmat> DenseClusterPartition(Originalmat& Densemat,f
   float* M;
   row=Densemat.get_row();
   col=Densemat.get_col();
-  M=Densemat.get_mat();
   int colSplit=(int) round(radio*col);
-  float *BigM,*LittleM;
-  size_t BigSize=static_cast<size_t>(row)*static_cast<size_t>(colSplit);
-  size_t LittleSize=static_cast<size_t>(row)*static_cast<size_t>(col-colSplit);
-  BigM=new float[BigSize];
-  LittleM=new float[LittleSize];
-  for(int i=0;i<row;i++){
-    memcpy(BigM+i*colSplit,M+i*col,sizeof(float)*colSplit);
-    memcpy(LittleM+i*(col-colSplit),M+i*col+colSplit,sizeof(float)*(col-colSplit));
-  }
-  Originalmat BigDensemat,LittleDensemat;
-  BigDensemat.setmat(row,colSplit,BigM);
-  LittleDensemat.setmat(row,col-colSplit,LittleM);
-  //memset(BigM,0,sizeof(float)*);
-  //memset(LittleM,0,sizeof(LittleM));
-  delete []BigM;
-  delete []LittleM;
+  int Bigcol=colSplit,Littlecol=col-colSplit;
+  Originalmat BigDensemat(row,Bigcol),LittleDensemat(row,Littlecol);
   return std::make_pair(BigDensemat,LittleDensemat);
 }
 
@@ -198,19 +183,10 @@ std::tuple<SparseMatrixType,MatrixXf,MatrixXf> ConvertFormat(Originalmat& Sparse
   int Sparsematrow=Sparsemat.get_row(),Sparsematcol=Sparsemat.get_col();
   int BigDensematrow=BigDensemat.get_row(),BigDensematcol=BigDensemat.get_col();
   int LittleDensematrow=LittleDensemat.get_row(),LittleDensematcol=LittleDensemat.get_col();
-  MatrixXf BigDensematrix(BigDensematrow,BigDensematcol),LittleDensematrix(LittleDensematrow,LittleDensematcol);
-  float* M=BigDensemat.get_mat();
-  for(int i=0;i<BigDensematrow;i++){
-    for(int j=0;j<BigDensematcol;j++){
-      BigDensematrix(i,j)=M[i*BigDensematcol+j];
-    }
-  }
-  M=LittleDensemat.get_mat();
-  for(int i=0;i<LittleDensematrow;i++){
-    for(int j=0;j<LittleDensematcol;j++){
-      LittleDensematrix(i,j)=M[i*LittleDensematcol+j];
-    }
-  }
+  float *M=Sparsemat.get_mat();
+  std::srand((unsigned int) time(0));
+  MatrixXf BigDensematrix=Eigen::MatrixXf::Random(BigDensematrow,BigDensematcol);
+  MatrixXf LittleDensematrix=Eigen::MatrixXf::Random(LittleDensematrow,LittleDensematcol);
   SparseMatrixType SparseMatrix(Sparsematrow,Sparsematcol);
   std::vector<T> tripletList;
   tripletList.reserve(nnz);
@@ -269,10 +245,12 @@ typedef struct{
   float *Value;
   int *InnerIndex;
   int *OuterIndex;
-  float *result;
-  float *DenseMatrix;
+  MatrixXf *result;
+  MatrixXf *DenseMatrix;
   int tid;
 }MY_ARGS;
+
+//pthread_mutex_t mutex;
 
 void* myfunc(void* args)
 {
@@ -282,57 +260,201 @@ void* myfunc(void* args)
   CPU_ZERO(&mask);
   CPU_SET(p->tid,&mask);
   int syscallret=sched_setaffinity(pid,sizeof(cpu_set_t),&mask);
-  if(syscallret){
-    fprintf(stderr,"syscall error %d\n",syscallret);
-  }
-  //printf("ID:%lu, CPU %d\n",pthread_self(),sched_getcpu());
+  //printf("ID:%lu, CPU %d\n",p->tid,sched_getcpu());
   for(int H_o=(p->startrow);H_o<(p->endrow);H_o++){
     for(int W_o=(p->OuterIndex[H_o]);W_o<(p->OuterIndex[H_o+1]);W_o+=p->T_W){
       for(int K_o=0;K_o<(p->col);K_o+=p->T_K){
-        for(int W_i=W_o;(W_i<W_o+p->T_W)&&(W_i<(p->OuterIndex[H_o+1]));W_i++){
-          for(int K_i=K_o;(K_i<K_o+p->T_K)&&(K_i<(p->col));K_i++){
-            p->result[H_o*(p->numcol)+(p->startcol)+K_i]+=p->Value[W_i]*(p->DenseMatrix[p->InnerIndex[W_i]*(p->col)+K_i]);
-            //std::cout<<p->result[H_o*(p->numcol)+(p->startcol)+K_i]<<std::endl;
-          }
+        int scol=std::min(p->T_W,p->OuterIndex[H_o+1]-W_o);
+        int dcol=std::min(p->T_K,p->col-K_o);
+        MatrixXf sm1(1,scol),dm1(scol,dcol),result1(1,dcol);
+        for(int W_i=W_o;W_i<W_o+scol;W_i++){
+          sm1(0,W_i-W_o)=(p->Value[W_i]);
+          dm1.block(W_i-W_o,0,1,dcol)=(*(p->DenseMatrix)).block(p->InnerIndex[W_i],K_o,1,dcol);
         }
+        result1.noalias()=sm1*dm1;
+        //pthread_mutex_lock(&mutex);
+        (*(p->result)).block(H_o,K_o+(p->startcol),1,dcol)+=result1;
+        //pthread_mutex_unlock(&mutex);
+        /*for(int W_i=W_o;(W_i<W_o+p->T_W)&&(W_i<(p->OuterIndex[H_o+1]));W_i++){
+          for(int K_i=K_o;(K_i<K_o+p->T_K)&&(K_i<(p->col));K_i++){
+            //std::cout<<H_o<<" "<<W_o<<" "<<K_o<<" "<<W_i<<" "<<K_i<<std::endl;
+            p->result[H_o*(p->numcol)+(p->startcol)+K_i]+=p->Value[W_i]*(p->DenseMatrix[p->InnerIndex[W_i]*(p->col)+K_i]);
+          }
+        }*/
       }
     }
   }
-  //printf("ID:%lu, CPU %d\n",pthread_self(),sched_getcpu());
+  //printf("ID:%lu, CPU %d\n",p->tid,sched_getcpu());
 
   return nullptr;
 }
 
-bool Judgeresult(float* result,int row,int col,MatrixXf& BigDenseMatrix,MatrixXf& LittleDenseMatrix,SparseMatrixType& SparseMatrix)
+bool Judgeresult(MatrixXf& result,int row,int col,MatrixXf& BigDenseMatrix,MatrixXf& LittleDenseMatrix,SparseMatrixType& SparseMatrix)
 {
   bool flag=true;
-  MatrixXf result_matrix1(row,BigDenseMatrix.innerSize());
-  result_matrix1.noalias()=SparseMatrix*BigDenseMatrix;
-  MatrixXf result_matrix2(row,LittleDenseMatrix.innerSize());
-  result_matrix2.noalias()=SparseMatrix*LittleDenseMatrix;
-  int Bigcol=BigDenseMatrix.innerSize(),Littlecol=LittleDenseMatrix.innerSize();
+  MatrixXf result_matrix(row,BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize());
+  MatrixXf Densematrix(BigDenseMatrix.outerSize(),BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize());
+  Densematrix.block(0,0,BigDenseMatrix.outerSize(),BigDenseMatrix.innerSize())=BigDenseMatrix;
+  Densematrix.block(0,BigDenseMatrix.innerSize(),BigDenseMatrix.outerSize(),LittleDenseMatrix.innerSize())=LittleDenseMatrix;
+  result_matrix.noalias()=SparseMatrix*Densematrix;
   for(int i=0;i<row;i++){
-    for(int j=0;j<Bigcol;j++){
-      if(std::fabs(result[i*col+j]-result_matrix1(i,j))>eps){
-        //std::cout<<result[i*col+j]<<" "<<result_matrix1(i,j)<<std::endl;
+    for(int j=0;j<col;j++){
+      if(fabs(result(i,j)-result_matrix(i,j))>eps){
         flag=false;
-      }
-    }
-    for(int j=Bigcol;j<col;j++){
-      if(std::fabs(result[i*col+j]-result_matrix2(i,j-Bigcol))>eps){
-        //std::cout<<result[i*col+j]<<" "<<result_matrix2(i,j-Bigcol)<<std::endl;
-        flag=false;
+        std::cout<<i<<" "<<j<<std::endl;
       }
     }
   }
   return flag;
 }
 
+void compute();
+
+void Process(std::string filename,std::string outname,float divisionratio,int Bigthreadnum,int Littlethreadnum){
+  std::cout<<filename<<std::endl;
+  //Eigen::initParallel();
+  Originalmat Sparsemat,Densemat;
+  int nnz;
+  std::cout<<divisionratio<<::std::endl;
+  std::tie(Sparsemat,Densemat,nnz)=ReadData(filename);
+  int row=Sparsemat.get_row();
+  int col=Sparsemat.get_col();
+  float* mat=Sparsemat.get_mat();
+  int *MappedRow=WeightReorder(Sparsemat);
+  //init_Densematrix(Densemat);
+  std::pair<Originalmat,Originalmat>SplitDensemat=DenseClusterPartition(Densemat,divisionratio);
+  Originalmat BigDensemat=SplitDensemat.first,LittleDensemat=SplitDensemat.second;
+  SparseMatrixType SparseMatrix;
+  MatrixXf BigDenseMatrix,LittleDenseMatrix;
+  std::tie(SparseMatrix,BigDenseMatrix,LittleDenseMatrix)=ConvertFormat(Sparsemat,BigDensemat,LittleDensemat,nnz);
+  auto value=SparseMatrix.valuePtr();
+  auto innerindex=SparseMatrix.innerIndexPtr();
+  auto outerindex=SparseMatrix.outerIndexPtr();
+  int *thread=TaskPartition_Thread(SparseMatrix,Littlethreadnum);
+  size_t nSize=static_cast<size_t>(Bigthreadnum+Littlethreadnum);
+  pthread_t* thread_handles=new pthread_t[nSize];
+  MY_ARGS* args=new MY_ARGS[nSize];
+  nSize=static_cast<size_t>(SparseMatrix.outerSize()*(BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize()));
+  MatrixXf result(SparseMatrix.outerSize(),BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize());
+  /*
+  for(int i=0;i<=Littlethreadnum;i++){
+    std::cout<<thread[i]<<" ";
+  }
+  std::cout<<std::endl;*/
+  for(int i=0;i<Littlethreadnum;i++){
+    args[i].startrow=thread[i];
+    args[i].endrow=thread[i+1];
+    args[i].InnerIndex=innerindex;
+    args[i].OuterIndex=outerindex;
+    args[i].Value=value;
+    args[i].DenseMatrix=&LittleDenseMatrix;
+    args[i].col=LittleDensemat.get_col();
+    args[i].T_W=1;
+    args[i].T_K=1;  
+    args[i].startcol=BigDenseMatrix.innerSize();
+    args[i].numcol=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
+    args[i].result=&result;
+    args[i].tid=i;
+  }
+  delete []thread;
+  thread=TaskPartition_Thread(SparseMatrix,Bigthreadnum);
+  /*for(int i=0;i<=Bigthreadnum;i++){
+    std::cout<<thread[i]<<" ";
+  }
+  std::cout<<std::endl;*/
+  for(int i=0;i<Bigthreadnum;i++){
+    args[i+Littlethreadnum].startrow=thread[i];
+    args[i+Littlethreadnum].endrow=thread[i+1];
+    args[i+Littlethreadnum].InnerIndex=innerindex;
+    args[i+Littlethreadnum].OuterIndex=outerindex;
+    args[i+Littlethreadnum].Value=value;
+    args[i+Littlethreadnum].DenseMatrix=&BigDenseMatrix;
+    args[i+Littlethreadnum].col=BigDensemat.get_col();
+    args[i+Littlethreadnum].T_W=1;
+    args[i+Littlethreadnum].T_K=1;  
+    args[i+Littlethreadnum].startcol=0;
+    args[i+Littlethreadnum].numcol=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
+    args[i+Littlethreadnum].result=&result;
+    args[i+Littlethreadnum].tid=i+4;
+  }
+  int numberOFProcessors=sysconf(_SC_NPROCESSORS_CONF);
+  //printf("Number of processors: %d\n",numberOFProcessors);
+  int warmup=0,repeat=1;
+  for(int k=0;k<warmup;k++){
+    
+    for(int i=0;i<Bigthreadnum+Littlethreadnum;i++){
+      pthread_create(&thread_handles[i],NULL,myfunc,(void *)(&args[i]));
+    }
+    for(int i=0;i<Bigthreadnum+Littlethreadnum;i++){
+        pthread_join(thread_handles[i],NULL);
+    }
+    
+  }
+  struct timeval start, end;
+  struct timeval ComputeStart,ComputeEnd;
+  double time=0;
+  std::vector<double> times;
+  gettimeofday(&ComputeStart,NULL);
+  for(int k=0;k<repeat;k++){
+    
+    gettimeofday(&start,NULL);
+    for(int i=0;i<Bigthreadnum+Littlethreadnum;i++){
+      pthread_create(&thread_handles[i],NULL,myfunc,(void *)(&args[i]));
+    }
+    for(int i=0;i<Bigthreadnum+Littlethreadnum;i++){
+      pthread_join(thread_handles[i],NULL);
+    } 
+    gettimeofday(&end,NULL);
+    time=( end.tv_usec - start.tv_usec )/1000000.0  + (end.tv_sec - start.tv_sec);
+    times.push_back(time);
+    
+  }
+  gettimeofday(&ComputeEnd,NULL);
+  
+  row=SparseMatrix.outerSize();
+  col=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
+  int flag=Judgeresult(result,row,col,BigDenseMatrix,LittleDenseMatrix,SparseMatrix);
+  if(flag){
+    std::cout<<"result correct"<<std::endl;
+  }
+  else{
+    std::cout<<"result error"<<std::endl;
+  }
+  double sum=std::accumulate(std::begin(times),std::end(times),0.0);
+  double mean=sum/(repeat*1.0);
+  double variance=0.0;
+  for(int i=0;i<repeat;i++){
+    variance=variance+pow(times[i]-mean,2);
+  }
+  variance=variance/(repeat*1.0);
+  std::ofstream out;
+  out.open(outname,std::ios::out|std::ios::app);
+  out<<filename<<',';
+  out<<1.0-(nnz*1.0)/(row*col*1.0)<<',';
+  out<<row<<',';
+  out<<col<<',';
+  out<<Densemat.get_col()<<',';
+  out<<mean<<',';
+  out<<variance<<',';
+  out<<ComputeStart.tv_sec*1000+ComputeStart.tv_usec/1000<<',';
+  out<<ComputeEnd.tv_sec*1000+ComputeEnd.tv_usec/1000<<std::endl;
+  out.close();
+  delete []MappedRow;
+  delete []thread;
+  delete []args;
+  delete []thread_handles;
+}
+
 int main(int argc,char **argv){
-  if(argc!=2){
+  if(argc!=5){
     std::cout<<"please input correct filename and output document"<<std::endl;
   }
   std::string filenamepath=argv[1];
+  std::string outname=argv[2];
+  float divisionratio=1.0-1.0/(8.33333/5.17241+1.0);
+  int Bigthreadnum=atoi(argv[3]);
+  int Littlethreadnum=atoi(argv[4]);
+  //std::cout<<Bigthreadnum<<" "<<Littlethreadnum<<std::endl;
   std::vector<std::string>filenames;
   std::ifstream read_file(filenamepath,std::ios::in);
   std::string name;
@@ -341,79 +463,12 @@ int main(int argc,char **argv){
   }
   read_file.close();
   int n=filenames.size();
+  std::ofstream out;
+  out.open(outname,std::ios::out|std::ios::app);
+  out<<"filename"<<','<<"sparse rate"<<','<<"H"<<','<<"W"<<','<<"N"<<','<<"Sparse_time_average"<<','<<"Sparse_time_val"<<','<<"S_s"<<','<<"S_e"<<std::endl;
+  out.close();
   for(int i=0;i<n;i++){
     std::string filename=filenames[i];
-    std::cout<<filename<<std::endl;
-    Originalmat Sparsemat,Densemat;
-    int nnz;
-    std::tie(Sparsemat,Densemat,nnz)=ReadData(filename);
-    int row=Sparsemat.get_row();
-    int col=Sparsemat.get_col();
-    float* mat=Sparsemat.get_mat();
-    int *MappedRow=WeightReorder(Sparsemat);
-    init_Densematrix(Densemat);
-    std::pair<Originalmat,Originalmat>SplitDensemat=DenseClusterPartition(Densemat,0.7);
-    Originalmat BigDensemat=SplitDensemat.first,LittleDensemat=SplitDensemat.second;
-    SparseMatrixType SparseMatrix;
-    MatrixXf BigDenseMatrix,LittleDenseMatrix;
-    std::tie(SparseMatrix,BigDenseMatrix,LittleDenseMatrix)=ConvertFormat(Sparsemat,BigDensemat,LittleDensemat,nnz);
-    auto value=SparseMatrix.valuePtr();
-    auto innerindex=SparseMatrix.innerIndexPtr();
-    auto outerindex=SparseMatrix.outerIndexPtr();
-    int numthread=4;
-    int *thread=TaskPartition_Thread(SparseMatrix,numthread);
-    size_t nSize=static_cast<size_t>(numthread*2+1);
-    pthread_t* thread_handles=new pthread_t[nSize];
-    MY_ARGS* args=new MY_ARGS[nSize];
-    nSize=static_cast<size_t>(SparseMatrix.outerSize()*(BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize()));
-    float *result=new float[nSize];
-    memset(result,0,sizeof(float)*nSize);
-    for(int i=0;i<numthread;i++){
-      args[i].startrow=args[i+numthread].startrow=thread[i];
-      args[i].endrow=args[i+numthread].endrow=thread[i+1];
-      args[i].InnerIndex=args[i+numthread].InnerIndex=innerindex;
-      args[i].OuterIndex=args[i+numthread].OuterIndex=outerindex;
-      args[i].Value=args[i+numthread].Value=value;
-      args[i].DenseMatrix=BigDensemat.get_mat();
-      args[i+numthread].DenseMatrix=LittleDensemat.get_mat();
-      args[i].col=BigDensemat.get_col();
-      args[i+numthread].col=LittleDensemat.get_col();
-      args[i].T_W=2;
-      args[i].T_K=4;
-      args[i+numthread].T_W=1;
-      args[i+numthread].T_K=2;  
-      args[i].startcol=0;
-      args[i].numcol=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
-      args[i+numthread].startcol=BigDenseMatrix.innerSize();
-      args[i+numthread].numcol=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
-      args[i].result=args[i+numthread].result=result;
-      args[i].tid=i;
-      args[i+numthread].tid=i+numthread;
-      //std::cout<<args[i].startrow<<" "<<args[i+numthread].startrow<<std::endl;
-      //std::cout<<args[i].endrow<<" "<<args[i+numthread].endrow<<std::endl;
-    }
-    int numberOFProcessors=sysconf(_SC_NPROCESSORS_CONF);
-    printf("Number of processors: %d\n",numberOFProcessors);
-    for(int i=0;i<numthread*2;i++){
-      pthread_create(&thread_handles[i],NULL,myfunc,(void *)(&args[i]));
-    }
-    for(int i=0;i<numthread*2;i++){
-        pthread_join(thread_handles[i],NULL);
-    }
-    row=SparseMatrix.outerSize();
-    col=BigDenseMatrix.innerSize()+LittleDenseMatrix.innerSize();
-    int flag=Judgeresult(result,row,col,BigDenseMatrix,LittleDenseMatrix,SparseMatrix);
-    if(flag){
-      std::cout<<"result correct"<<std::endl;
-    }
-    else{
-      std::cout<<"result error"<<std::endl;
-      return 0;
-    }
-    delete []MappedRow;
-    delete []thread;
-    delete []args;
-    delete []result;
-    delete []thread_handles;
+    Process(filename,outname,divisionratio,Bigthreadnum,Littlethreadnum);
   }
 }
