@@ -272,6 +272,7 @@ void* myfunc(void* args)
           dm1.block(W_i-W_o,0,1,dcol)=(*(p->DenseMatrix)).block(p->InnerIndex[W_i],K_o,1,dcol);
         }
         result1.noalias()=sm1*dm1;
+        std::cout<<result1<<std::endl;
         //pthread_mutex_lock(&mutex);
         (*(p->result)).block(H_o,K_o+(p->startcol),1,dcol)+=result1;
         //pthread_mutex_unlock(&mutex);
@@ -301,7 +302,7 @@ bool Judgeresult(MatrixXf& result,int row,int col,MatrixXf& BigDenseMatrix,Matri
     for(int j=0;j<col;j++){
       if(fabs(result(i,j)-result_matrix(i,j))>eps){
         flag=false;
-        std::cout<<i<<" "<<j<<std::endl;
+        //std::cout<<i<<" "<<j<<std::endl;
       }
     }
   }
@@ -348,7 +349,7 @@ void Process(std::string filename,std::string outname,float divisionratio,int Bi
     args[i].OuterIndex=outerindex;
     args[i].Value=value;
     args[i].DenseMatrix=&LittleDenseMatrix;
-    args[i].col=LittleDensemat.get_col();
+    args[i].col=LittleDenseMatrix.innerSize();
     args[i].T_W=1;
     args[i].T_K=1;  
     args[i].startcol=BigDenseMatrix.innerSize();
@@ -369,7 +370,7 @@ void Process(std::string filename,std::string outname,float divisionratio,int Bi
     args[i+Littlethreadnum].OuterIndex=outerindex;
     args[i+Littlethreadnum].Value=value;
     args[i+Littlethreadnum].DenseMatrix=&BigDenseMatrix;
-    args[i+Littlethreadnum].col=BigDensemat.get_col();
+    args[i+Littlethreadnum].col=BigDenseMatrix.innerSize();
     args[i+Littlethreadnum].T_W=1;
     args[i+Littlethreadnum].T_K=1;  
     args[i+Littlethreadnum].startcol=0;
