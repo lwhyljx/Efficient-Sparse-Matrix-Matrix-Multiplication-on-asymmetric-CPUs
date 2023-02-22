@@ -85,21 +85,28 @@ def emit_finegrained_sparse_kernel_body(tesa_matrix, sp_matrix, M1, N1, K1, M2, 
         device_func = emit_block_device_func(tesa_matrix, sp_matrix, M1, N1, K1, M2, N2, K2, blockIdx_x, DEVICE_FUNC_PREFIX)
         # print(device_func)
         device_funcs.append(device_func)
-    tile_thread=int(blockDim_x/threadnum)
-    for i in range(threadnum):
-        func_body = ""
-        func_body+=f"void* threadfun_{i}(void* args) {{\n"
-        func_body+=f" MY_ARGS* p=(MY_ARGS*)args;\n"
-        #func_body+=f" set_cpu(p->tid);\n"
-        func_body+=f" float* output0_tile=nullptr;\n"
-        func_body+=f" float* input0=p->input0;\n"
-        func_body+=f" float* output0=p->output0;\n"
-        for blockIdx_x in range(tile_thread):
-            func_body += f" {DEVICE_FUNC_PREFIX}_device_func_blockIdx_x_{i*tile_thread+blockIdx_x}(input0, output0);\n"
-        func_body+=f" return nullptr;\n"
+    if threadnum != 1:
+        tile_thread=int(blockDim_x/threadnum)
+        for i in range(threadnum):
+            func_body = ""
+            func_body+=f"void* threadfun_{i}(void* args) {{\n"
+            func_body+=f" MY_ARGS* p=(MY_ARGS*)args;\n"
+            #func_body+=f" set_cpu(p->tid);\n"
+            func_body+=f" float* output0_tile=nullptr;\n"
+            func_body+=f" float* input0=p->input0;\n"
+            func_body+=f" float* output0=p->output0;\n"
+            for blockIdx_x in range(tile_thread):
+                func_body += f" {DEVICE_FUNC_PREFIX}_device_func_blockIdx_x_{i*tile_thread+blockIdx_x}(input0, output0);\n"
+            func_body+=f" return nullptr;\n"
+            func_body+=f"}}\n"
+            device_funcs.append(func_body);  
+    else:
+        func_body = "";
+        func_body +=f" void Matrixmatmul(float* input0, float* input1, float* output0){{\n"
+        for blockIdx_x in range(blockDim_x):
+                func_body += f" {DEVICE_FUNC_PREFIX}_device_func_blockIdx_x_{blockIdx_x}(input0, output0);\n"
         func_body+=f"}}\n"
         device_funcs.append(func_body);  
-
     # # write back output0_local
     # func_body += f"float *output0_tile = output0 + (blockIdx.x * {M2} + threadIdx.x) * {N1} + blockIdx.y * {N2};\n"
     # func_body += f"float4 *output0_tile_f4 = reinterpret_cast<float4*>(output0_tile);\n"
@@ -131,20 +138,24 @@ def code_gen(M1, N1, K1, M2, N2, K2, threadnum,write_file=False):
         device_func_code += device_func
 
     pthread_creat=""
-    pthread_creat+=f" pthread_t* thread_handles=new pthread_t[{threadnum}];\n"
-    pthread_creat+=f" MY_ARGS* args=new MY_ARGS[{threadnum}];\n"
-    for i in range(threadnum):
-        pthread_creat+=f" args[{i}].tid={i*2};\n"
-        pthread_creat+=f" args[{i}].input0=d_B.getData();\n"
-        pthread_creat+=f" args[{i}].output0=d_C.getData();\n"
-    
-    pthread_run=""
-    for i in range(threadnum):
-        pthread_run+=f" pthread_create(&thread_handles[{i}],NULL,threadfun_{i},(void *)(&args[{i}]));\n"
-    pthread_run+=f"for(int k=0;k<{threadnum};k++){{\n"
-    pthread_run+=f"pthread_join(thread_handles[k],NULL);\n"
-    pthread_run+=f"}}\n"
+    if threadnum!=1:
+        pthread_creat+=f" pthread_t* thread_handles=new pthread_t[{threadnum}];\n"
+        pthread_creat+=f" MY_ARGS* args=new MY_ARGS[{threadnum}];\n"
+        for i in range(threadnum):
+            pthread_creat+=f" args[{i}].tid={i*2};\n"
+            pthread_creat+=f" args[{i}].input0=d_B.getData();\n"
+            pthread_creat+=f" args[{i}].output0=d_C.getData();\n"
 
+    pthread_run=""
+    if threadnum!=1:
+        for i in range(threadnum):
+            pthread_run+=f" pthread_create(&thread_handles[{i}],NULL,threadfun_{i},(void *)(&args[{i}]));\n"
+        pthread_run+=f"for(int k=0;k<{threadnum};k++){{\n"
+        pthread_run+=f"pthread_join(thread_handles[k],NULL);\n"
+        pthread_run+=f"}}\n"
+    else:
+        pthread_run+=f" Matrixmatmul(d_B.getData(), d_A.getData(), d_C.getData());\n"
+        
     full_code = _CpuCodeTemplate.format(device_func_code,M, N, K, matrix_str, pthread_creat,pthread_run,pthread_run,threadnum,M2,K2,N2)
 
     code_file_name = None
